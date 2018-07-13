@@ -1,0 +1,477 @@
+<?php
+
+/**
+ * Implements hook_menu().
+ */
+
+ function relational_db_indexer_menu() {
+  $items = array();
+  $items['admin/config/search/relational-db-indexer'] = array(
+    'title'            => 'Relational DB indexer',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('relational_db_indexer_settings'),
+    'access arguments' => array('administer search'),
+  );
+
+  return $items;
+}
+
+/**
+ * Setting form.
+ */
+function relational_db_indexer_settings($form, &$form_state) {
+  $form = array();
+	// Check if settings are fine.
+	
+	
+	
+	$relational_db_connection = relational_db_indexer_get_db_connection();
+	if (!$relational_db_connection) {
+		drupal_set_message(t("Unable to connect to database. Please check your settings."), "error");
+	}
+	else {
+		drupal_set_message(t("Connections to database are fine."));
+	}
+  
+	
+	
+  // Relational DB settings.
+  $form['relational_db_settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => 'Relational DB settings',
+    '#collapsible' => TRUE,
+  );
+
+  $form['relational_db_settings']['relational_db_indexer_index_immediately'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Index items immediately'),
+    '#description' => t('Index items immediately or wait until next cron run. It might cause issues for large sites when this is checked.'),
+    '#default_value' => variable_get('relational_db_indexer_index_immediately', FALSE),
+  );
+  $form['relational_db_settings']['relational_db_indexer_items_per_cron_run'] = array(
+    '#type' => 'select',
+    '#title' => 'Number of items to index per cron run',
+    '#description' => t('Higher number could make index operation faster but could also cause timeout and memory limit error.'),
+    '#options' => array(
+      10 => 10,
+      20 => 20,
+      50 => 50,
+      100 => 100,
+      200 => 200,
+      500 => 500,
+    ),
+    '#default_value' => variable_get('relational_db_indexer_items_per_cron_run', 50),
+  );
+
+  // Entity selector to select which entity should be indexed.
+  $form['selected_entity'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Select contents to index'),
+    '#description' => t('Different entity types are saved into separated collections.'),
+    '#collapsible' => TRUE,
+  );
+
+  $options = relational_db_indexer_get_entity_options();
+  $default_values = variable_get("relational_db_indexer_selected_entity_bundle", array());
+  $form['selected_entity']['relational_db_indexer_selected_entity_bundle'] = array(
+    '#type' => 'checkboxes',
+    '#options' => $options,
+    '#default_value' => $default_values,
+  );
+  
+  // Relational DB Connection settings.
+	$form['relational_db_connection_settings'] = array(
+	'#type' => 'fieldset',
+	'#title' => 'Relational DB Connection settings',
+	'#collapsible' => TRUE,
+	);
+	$db_options = relational_db_indexer_get_database_type_options();
+    $form['relational_db_connection_settings']['database_type'] = array(
+    '#type' => 'select',
+    '#title' => t('Database type'),
+    '#description' => t('This database type.'),
+    '#options' => $db_options,
+	'#default_value' => variable_get('database_type', 'My Sql'),
+    );
+	$form['relational_db_connection_settings']['database_host_name'] = array(
+	'#type' => 'textfield',
+	'#title' => t('Database Host Name'),
+	'#size' => 100,
+	'#default_value' => variable_get('database_host_name', ''),
+	);
+	$form['relational_db_connection_settings']['database_host_port'] = array(
+	'#type' => 'textfield',
+	'#title' => t('Database Host Port'),
+	'#size' => 100,
+	'#default_value' => variable_get('database_host_port', ''),
+	);
+	$form['relational_db_connection_settings']['database_database_name'] = array(
+	'#type' => 'textfield',
+	'#title' => t('Database Name'),
+	'#size' => 100,
+	'#default_value' => variable_get('database_database_name', ''),
+	);
+	$form['relational_db_connection_settings']['database_database_username'] = array(
+	'#type' => 'textfield',
+	'#title' => t('Database Username'),
+	'#size' => 100,
+	'#default_value' => variable_get('database_database_username', ''),
+	);
+	$form['relational_db_connection_settings']['database_database_password'] = array(
+	'#type' => 'textfield',
+	'#title' => t('Database Password'),
+	'#size' => 100,
+	'#default_value' => variable_get('database_database_password', ''),
+  );	
+  relational_db_indexer_create_db();	
+  return system_settings_form($form);
+}
+
+/**
+ * Get the options for entity selector checkboxes.
+ *
+ * This function will format key of the return array as ENTITY_TYPE*BUNDLE.
+ *
+ * @return array
+ *   list of entity to be used for entity_bundle checkboxes
+ */
+function relational_db_indexer_get_entity_options() {
+  $entity_info = entity_get_info();
+  $return_array = array();
+
+  foreach ($entity_info as $key => $val) {
+    // Some entity doesn't need bundle selector.
+    if (in_array($key, relational_db_indexer_get_entity_without_bundle_support())) {
+      $return_array[$key] = $val['label'];
+      continue;
+    }
+    foreach ($val['bundles'] as $bundle_key => $bundle) {
+      $return_key = $key . "*" . $bundle_key;
+      $return_val = $bundle['label'] . " of entity type " . $val['label'];
+      $return_array[$return_key] = $return_val;
+    }
+  }
+  ksort($return_array);
+  return $return_array;
+}
+
+/**
+ * Get list of entities without bundle support.
+ *
+ * There is entity like comment that does not support bundle conditions.
+ * And also Those that are ussually don't have many bundles.
+ *
+ * @return array
+ *   list of entity to be excluded from bundle index selector.
+ */
+function relational_db_indexer_get_entity_without_bundle_support() {
+  return array('comment', 'taxonomy_vocabulary', 'file', 'user');
+}
+
+
+/**
+ * Get list of database type support.
+ *
+ * There is entity like comment that does not support bundle conditions.
+ * And also Those that are ussually don't have many bundles.
+ *
+ * @return array
+ *   list of entity to be excluded from bundle index selector.
+ */
+function relational_db_indexer_get_database_type_options() {
+  $entity_info = entity_get_info();
+  $return_array = array();
+  $return_array["mysql"] = "My Sql";
+  ksort($return_array);
+  return $return_array;
+}
+
+
+/**
+ * Get static mongodb client object.
+ *
+ * @return object
+ *   The mongo client object or false if can't create the object
+ */
+function relational_db_indexer_get_db_connection() {
+	
+    $host = variable_get('database_host_name', '');
+    $port = variable_get('database_host_port', '');
+    $dbname = variable_get('database_database_name', '');
+    $dbuser = variable_get('database_database_username', '');
+    $dbpass = variable_get('database_database_password', '');
+    $dbpass = variable_get('database_database_password', '');
+    $driver = variable_get('database_type', 'mysql');
+
+    if($host != '' && $port !='' && $dbname !='' && $dbuser != ''){
+        $database_info = array(
+          'host' => $host,
+          'port' => $port,
+          'database' => $dbname,
+          'username' => $dbuser,
+          'password' => $dbpass,
+          'driver' => $driver
+      );
+      // Add connection info
+      Database::addConnectionInfo('externaldb', 'default', $database_info);
+
+      // Test connection
+        try {
+            $connection = Database::getConnection('default', 'externaldb');
+            return $connection;
+        }
+        catch (PDOException $e) {
+            return false;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Creates database tables for normalized migration.
+ */
+function relational_db_indexer_create_db() {
+
+  $db = relational_db_indexer_get_db_connection();
+
+  $types = relational_db_indexer_migration_types();
+  $function = 'relational_db_indexer_create_db_table_node' ;
+  $function($db, 'page');
+  // foreach ($types as $type => $info) {
+
+  //  foreach (array_filter($values[$type]) as $bundle => $on) {
+  //     $function = 'relational_db_indexer_create_db_table_' . $type;
+  //     $function($db, $bundle, $values);
+  //   }
+
+  // }
+
+}
+
+/**
+ * Creates a database table for a given content type.
+ */
+function relational_db_indexer_create_db_table_node(&$db, $content_type) {
+
+  $table_name = 'node_' . $content_type;
+
+  if ($db->schema()->tableExists($table_name)) {
+    $db->schema()->dropTable($table_name);
+  }
+
+  if (!$db->schema()->tableExists($table_name)) {
+
+    $fields = field_info_instances('node', $content_type);
+    ksort($fields);
+
+    $schema = array(
+      'description' => 'relational_db_indexer-generated table for ' . $content_type,
+      'fields' => array(
+        'id' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'uid' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'status' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'title' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+      ),
+      'unique keys' => array(
+        'id' => array('id'),
+      ),
+    );
+
+    foreach ($fields as $field_name => $field) {
+      $schema['fields'][$field_name] = relational_db_indexer_create_field_schema($field);
+    }
+
+    $db->schema()->createTable($table_name, $schema);
+
+  }
+}
+
+/**
+ * Creates a database table for a given content type.
+ */
+function relational_db_indexer_create_db_table_taxonomy(&$db, $vocabulary) {
+
+  $table_name = 'taxonomy_' . $vocabulary;
+
+  if ($db->schema()->tableExists($table_name)) {
+    $db->schema()->dropTable($table_name);
+  }
+
+  if (!$db->schema()->tableExists($table_name)) {
+
+    $fields = field_info_instances('taxonomy_term', $vocabulary);
+    ksort($fields);
+
+    $schema = array(
+      'description' => 'relational_db_indexer-generated table for ' . $vocabulary,
+      'fields' => array(
+        'id' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'name' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'description' => array(
+          'type' => 'blob',
+          // 'size' => 'medium'
+        ),
+      ),
+      'unique keys' => array(
+        'id' => array('id'),
+      ),
+    );
+
+    foreach ($fields as $field_name => $field) {
+      $schema['fields'][$field_name] = relational_db_indexer_create_field_schema($field);
+    }
+
+    $db->schema()->createTable($table_name, $schema);
+
+  }
+
+}
+
+/**
+ * Creates a database table for a given content type.
+ */
+function relational_db_indexer_create_db_table_user(&$db, $user) {
+
+  $table_name = 'user_' . $user;
+
+  if ($db->schema()->tableExists($table_name)) {
+    $db->schema()->dropTable($table_name);
+  }
+
+  if (!$db->schema()->tableExists($table_name)) {
+
+    $fields = field_info_instances('user', $user);
+    ksort($fields);
+
+    $schema = array(
+      'description' => 'relational_db_indexer-generated table for ' . $user,
+      'fields' => array(
+        'id' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'name' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'status' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'created' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'mail' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+        'init' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+        ),
+      ),
+      'unique keys' => array(
+        'id' => array('id'),
+      ),
+    );
+
+    foreach ($fields as $field_name => $field) {
+      $schema['fields'][$field_name] = relational_db_indexer_create_field_schema($field);
+    }
+
+    $db->schema()->createTable($table_name, $schema);
+
+  }
+
+}
+
+/**
+ * Creates migrate mapping for a Drupal field.
+ */
+function relational_db_indexer_create_field_mapping($field, $values) {
+
+ // Here New Code
+
+}
+
+/**
+ * Creates relational_db schema for a Drupal field.
+ */
+function relational_db_indexer_create_field_schema($field) {
+
+  // Set default schema
+
+  $field_info = field_info_field($field['field_name']);
+
+  $schema = array(
+    'type' => 'blob',
+    // 'size' => 'medium'
+  );
+
+  // If cardinality is greater than 1, field should be text to hold multiple values.
+
+  if ($field_info['cardinality'] == 1) {
+
+    switch ($field['widget']['type']) {
+
+      case 'text_textfield':
+        $schema = array(
+          'type' => 'varchar',
+          'length' => 255,
+        );
+        break;
+    }
+
+  }
+
+  return $schema;
+
+}
+
+function relational_db_indexer_migration_types() {
+
+  return array(
+    'node' => array(
+      'properties' => array('id', 'title'),
+    ),
+    'taxonomy' => array(
+      'properties' => array('id', 'name', 'description'),
+    ),
+    'user' => array(
+      'properties' => array('id', 'name', 'status', 'created', 'mail', 'init'),
+    ),
+  );
+
+}

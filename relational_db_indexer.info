@@ -1,0 +1,4 @@
+name = Relational DB Indexer
+description = Relational DB Indexer
+core = 7.x
+package  = DyD
